@@ -1,0 +1,19 @@
+import tensorflow as tf
+BATCH_SIZE = 15
+
+sess = tf.InteractiveSession()
+
+states = tf.Variable(tf.random.uniform([100, 10], -1, 1))
+meta_actions = tf.Variable(tf.random.uniform([100, 10], -1, 1))
+actions = tf.Variable(tf.random.uniform([100, 10], -1, 1))
+
+ds = tf.concat([states, meta_actions, actions], 1)
+num_batches = ds.shape[0].value // BATCH_SIZE
+batches_ds = tf.split(ds[:num_batches*BATCH_SIZE,:], num_batches, 0 )
+tf.initialize_all_variables().run()
+op = sess.run(batches_ds)
+
+states = tf.
+
+
+print("stop")

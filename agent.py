@@ -27,6 +27,7 @@ from context import gin_imports
 slim = tf.contrib.slim
 
 
+
 @gin.configurable
 class UvfAgentCore(object):
   """Defines basic functions for UVF agent. Must be inherited with an RL agent.
@@ -522,6 +523,8 @@ class MetaAgentCore(UvfAgentCore):
     self._context_vars = dict()
     self._action_vars = dict()
 
+    self._sub_agent = None
+
     assert len(self.context_as_action_specs) == 1
     self.BASE_AGENT_CLASS.__init__(
         self,
@@ -672,7 +675,6 @@ def huber(x, kappa=0.1):
   return (0.5 * tf.square(x) * tf.to_float(tf.abs(x) <= kappa) +
           kappa * (tf.abs(x) - 0.5 * kappa) * tf.to_float(tf.abs(x) > kappa)
           ) / kappa
-
 
 @gin.configurable()
 class StatePreprocess(object):

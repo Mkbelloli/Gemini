@@ -29,11 +29,15 @@ import time
 import tensorflow as tf
 slim = tf.contrib.slim
 
+import confvalues
+
 import gin.tf
 # pylint: disable=unused-import
 import train_utils
 import agent as agent_
 from agents.connected_agent import ConnectedAgent
+from I2HRL_agent import I2HRL_UvfAgent
+from I2HRL_agent import PolicyRepresentationModule
 from agents import circular_buffer
 from utils import utils as uvf_utils
 from environments import create_maze_env
@@ -57,7 +61,8 @@ def collect_experience(tf_env, agent, meta_agent, state_preprocess,
                        episode_rewards, episode_meta_rewards,
                        store_context,
                        disable_agent_reset,
-                       use_windowed_data_collection):
+                       use_windowed_data_collection,
+                       embedding_model_fn=None):
   """Collect experience in a tf_env into a replay_buffer using action_fn.
 
   Args:
@@ -162,6 +167,8 @@ def collect_experience(tf_env, agent, meta_agent, state_preprocess,
       collect_experience_ops.append(
           update_episode_rewards(tf.reduce_sum(context_reward), meta_reward,
                                  reset_episode_cond))
+      reset_meta_agent_op = tf.cond(reset_episode_cond, increment_episode,
+                                     no_op_int)
 
   meta_action_every_n = agent.tf_context.meta_action_every_n
   with tf.control_dependencies(collect_experience_ops):
@@ -169,6 +176,11 @@ def collect_experience(tf_env, agent, meta_agent, state_preprocess,
 
     meta_action = tf.to_float(
         tf.concat(context, -1))  # Meta agent action is low-level context
+
+    if confvalues.I2HRL:
+        # Highlevel action is stored explicitely to avoid that setting store_context
+        # could inibit its usage
+        transition += [meta_action]
 
     meta_end = tf.logical_and(  # End of meta-transition.
         tf.equal(agent.tf_context.t % meta_action_every_n, 1),
@@ -202,6 +214,10 @@ def collect_experience(tf_env, agent, meta_agent, state_preprocess,
                        discount * (1 - tf.to_float(next_reset_episode_cond)),
                        next_state]
     meta_transition.extend([states_var, actions])
+
+    if confvalues.I2HRL:
+        meta_transition += [agent.get_embedding_policy()]
+
     if store_context:  # store current and next context into replay
       transition += context + list(agent.context_vars)
       meta_transition += meta_context_var + list(meta_agent.context_vars)
@@ -327,6 +343,7 @@ def train_uvf(train_dir,
               meta_critic_optimizer=None,
               meta_actor_optimizer=None,
               repr_optimizer=None,
+              embed_optimizer=None,
               relabel_contexts=False,
               meta_relabel_contexts=False,
               batch_size=64,
@@ -363,7 +380,11 @@ def train_uvf(train_dir,
               max_critic_horizon=10,
               relabel_using_dynamics=False,
               use_windowed_data_collection=False,
-              skip_training_policies=False):
+              skip_training_policies=False,
+              #new params for I2HRL
+              use_i2hrl=False,
+              lp_embedder_class=None,
+              lpemb_optimizer=None):
   """Train an agent."""
   tf_env = create_maze_env.TFPyEnvironment(environment)
   observation_spec = [tf_env.observation_spec()]
@@ -398,6 +419,9 @@ def train_uvf(train_dir,
         debug_summaries=debug_summaries)
     uvf_agent.set_meta_agent(agent=meta_agent)
     uvf_agent.set_replay(replay=replay_buffer)
+    if use_i2hrl:
+        uvf_agent.set_replaybuffer(replay_buffer)
+  meta_agent.set_subagent(uvf_agent)
 
   if use_connected_policies:
     meta_agent = ConnectedAgent(
@@ -409,6 +433,12 @@ def train_uvf(train_dir,
 
   with tf.variable_scope('state_preprocess'):
     state_preprocess = state_preprocess_class()
+
+  lp_embedder = None
+  if use_i2hrl:
+      with tf.variable_scope('lp_embedder'):
+        lp_embedder = lp_embedder_class()
+        uvf_agent.load_policy_embedder(lp_embedder)
 
   with tf.variable_scope('inverse_dynamics'):
     inverse_dynamics = inverse_dynamics_class(
@@ -511,7 +541,9 @@ def train_uvf(train_dir,
 
     with tf.name_scope(mode):
       batch = buff.get_random_batch(batch_size, num_steps=num_steps)
+
       states, actions, rewards, discounts, next_states = batch[:5]
+
       with tf.name_scope('Reward'):
         tf.summary.scalar('average_step_reward', tf.reduce_mean(rewards))
       rewards *= reward_scale_factor
@@ -533,7 +565,7 @@ def train_uvf(train_dir,
       contexts, next_contexts = agent.sample_contexts(
         mode='train', batch_size=batch_size,
         state=states, next_state=next_states)
-    
+
       if mode == 'meta':
         low_states = batch_dequeue[5]
         low_actions = batch_dequeue[6]
@@ -571,10 +603,24 @@ def train_uvf(train_dir,
             update_ops=None,
             summarize_gradients=summarize_gradients,
             clip_gradient_norm=clip_gradient_norm,
-            variables_to_train=state_preprocess.get_trainable_vars(),)
+            variables_to_train=state_preprocess.get_trainable_vars())
+
+      if use_i2hrl:
+          lp_embedder_loss, _, _ = lp_embedder.loss(states, actions, low_actions)
+          lpemb_train_op = slim.learning.create_train_op(
+            lp_embedder_loss,
+            lpemb_optimizer,
+            global_step=None,
+            update_ops=None,
+            summarize_gradients=summarize_gradients,
+            clip_gradient_norm=clip_gradient_norm,
+            variables_to_train=lp_embedder.get_trainable_vars())
+
 
       if not relabel:  # Re-label context (in the style of TDM or HER).
         shift_index = (5 if mode == "nometa" else 7)
+        if use_i2hrl:
+            shift_index+=1
         contexts, next_contexts = (
           batch_dequeue[shift_index:(shift_index + len(contexts))],
           batch_dequeue[(shift_index + len(contexts)):(shift_index + len(contexts) * 2)])
@@ -674,12 +720,17 @@ def train_uvf(train_dir,
     train_op = tf.add_n(train_op_list[2:], name='post_update_targets')
     # Representation training steps on every low-level policy training step.
     train_op += repr_train_op
+
+    if use_i2hrl:
+        train_op += lpemb_train_op
+
+
   with tf.control_dependencies([update_meta_targets_op, assert_op]):
     meta_train_op = tf.add_n(train_op_list[:2],
                              name='post_update_meta_targets')
 
   if debug_summaries:
-    train_.gen_debug_batch_summaries(batch)
+    train_op.gen_debug_batch_summaries(batch)
     slim.summaries.add_histogram_summaries(
         uvf_agent.get_trainable_critic_vars(), 'critic_vars')
     slim.summaries.add_histogram_summaries(

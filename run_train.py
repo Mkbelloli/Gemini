@@ -28,7 +28,6 @@ import gin.tf
 # pylint: enable=unused-import
 import train
 # pylint: disable=unused-import
-
 flags = tf.app.flags
 FLAGS = flags.FLAGS
 

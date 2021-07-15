@@ -1,4 +1,4 @@
-name: efficient-hrl
+name: Gemini
 channels:
   - conda-forge
   - anaconda
