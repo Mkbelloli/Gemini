@@ -363,7 +363,9 @@ def train_uvf(train_dir,
               max_critic_horizon=10,
               relabel_using_dynamics=False,
               use_windowed_data_collection=False,
-              skip_training_policies=False):
+              skip_training_policies=False,
+              HAAR_enable_flag=False,
+              HAAR_reward_weight=0.0 ):
   """Train an agent."""
   tf_env = create_maze_env.TFPyEnvironment(environment)
   observation_spec = [tf_env.observation_spec()]
@@ -484,7 +486,7 @@ def train_uvf(train_dir,
       episode_meta_rewards=episode_meta_rewards,
       store_context=True,
       disable_agent_reset=False,
-      use_windowed_data_collection=use_windowed_data_collection
+      use_windowed_data_collection=use_windowed_data_collection,
   )
 
   train_op_list = []
@@ -584,6 +586,10 @@ def train_uvf(train_dir,
       if mode == 'nometa':
         context_rewards, context_discounts = agent.compute_rewards(
             'train', state_reprs, actions, rewards, next_state_reprs, contexts)
+
+        if HAAR_enable_flag:
+            context_rewards = tf.math.add_n([context_rewards, tf.math.scalar_mul(HAAR_reward_weight, rewards)])
+
       elif mode == 'meta': # Meta-agent uses sum of rewards, not context-specific rewards.
         _, context_discounts = agent.compute_rewards(
             'train', states, actions, rewards, next_states, contexts)
