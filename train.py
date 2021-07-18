@@ -38,6 +38,7 @@ from agents import circular_buffer
 from utils import utils as uvf_utils
 from environments import create_maze_env
 import multiprocessing as m
+import numpy
 # pylint: enable=unused-import
 
 
@@ -57,7 +58,10 @@ def collect_experience(tf_env, agent, meta_agent, state_preprocess,
                        episode_rewards, episode_meta_rewards,
                        store_context,
                        disable_agent_reset,
-                       use_windowed_data_collection):
+                       use_windowed_data_collection,
+                       variable_skill_length,
+                       variable_skill_length_tau,
+                       variable_skill_length_start_multiplier):
   """Collect experience in a tf_env into a replay_buffer using action_fn.
 
   Args:
@@ -163,7 +167,36 @@ def collect_experience(tf_env, agent, meta_agent, state_preprocess,
           update_episode_rewards(tf.reduce_sum(context_reward), meta_reward,
                                  reset_episode_cond))
 
-  meta_action_every_n = agent.tf_context.meta_action_every_n
+  # >>> 1719410 - BEGIN
+  if variable_skill_length:
+      # variable skill length
+      tf_context_meta_action_every_n_op = tf.constant(agent.tf_context.meta_action_every_n, dtype=tf.float32)
+      variable_skill_length_start_multiplier_op = tf.constant(variable_skill_length_start_multiplier, dtype=tf.float32)
+      variable_skill_length_tau_op = tf.constant(variable_skill_length_tau, dtype=tf.float32)
+
+      meta_action_every_n_op = tf.cast(tf.math.floor(tf.math.maximum(
+          tf_context_meta_action_every_n_op,
+          tf.math.multiply(
+              tf.math.multiply( tf_context_meta_action_every_n_op,
+              variable_skill_length_start_multiplier_op),
+              tf.math.exp(
+                  tf.multiply(tf.constant(-1.0),
+                        tf.math.divide(
+                            tf.multiply(variable_skill_length_tau_op, tf.cast(agent.tf_context.t, tf.float32)),
+                            tf_context_meta_action_every_n_op
+                        )
+                  )
+              )
+          )
+      )), tf.int32)
+
+  else:
+    # fixed skill length
+    meta_action_every_n_op = tf.constant(agent.tf_context.meta_action_every_n, dtype=tf.int32)
+
+  ## then I changed meta_action_every_n in meta_action_every_n_op
+  # <<< 1719410 - END
+
   with tf.control_dependencies(collect_experience_ops):
     transition = [state, action, reward, discount, next_state]
 
@@ -171,17 +204,32 @@ def collect_experience(tf_env, agent, meta_agent, state_preprocess,
         tf.concat(context, -1))  # Meta agent action is low-level context
 
     meta_end = tf.logical_and(  # End of meta-transition.
-        tf.equal(agent.tf_context.t % meta_action_every_n, 1),
+        tf.equal(agent.tf_context.t % meta_action_every_n_op, 1),
         agent.tf_context.t > 1) if not use_windowed_data_collection else tf.fill([], True)
     with tf.variable_scope(tf.get_variable_scope(), reuse=tf.AUTO_REUSE):
-      states_var = tf.get_variable('states_var',
-                                   [meta_action_every_n * 2, state.shape[-1]],
-                                   state.dtype)
-      actions_var = tf.get_variable('actions_var',
-                                    [meta_action_every_n * 2, action.shape[-1]],
-                                    action.dtype)
+
+      def _get_variable(name, base_obj):
+           if variable_skill_length:
+                   d = [agent.tf_context.meta_action_every_n * variable_skill_length_start_multiplier]
+                   if len(base_obj.shape) > 0:
+                       d.append(base_obj.shape[-1])
+
+                   v = tf.get_variable(name, d, base_obj.dtype)
+                   return v[:meta_action_every_n_op]
+           else:
+               d = [agent.tf_context.meta_action_every_n]
+               if len(base_obj.shape)>0:
+                   d.append(base_obj.shape[-1])
+               return tf.get_variable(name, d,  base_obj.dtype)
+
+
+      states_var = _get_variable('states_var', state)
+      actions_var = _get_variable('actions_var', action)
+
       state_var = tf.get_variable('state_var', state.shape, state.dtype)
-      reward_var = tf.get_variable('rewards_var', [meta_action_every_n * 2], reward.dtype)
+      #reward_var = tf.get_variable('rewards_var', [get_variabledim()], reward.dtype)
+      reward_var = _get_variable('rewards_var', reward)
+      # tf.get_variable('rewards_var', [get_variabledim()], reward.dtype)
       meta_action_var = tf.get_variable('meta_action_var',
                                         meta_action.shape, meta_action.dtype)
       meta_context_var = [
@@ -198,7 +246,7 @@ def collect_experience(tf_env, agent, meta_agent, state_preprocess,
       reward_var_upd = tf.assign(reward_var, tf.concat([reward_var[1:], [0.1 * meta_reward]], 0))
 
     meta_transition = [state_var, meta_action_var,
-                       tf.reduce_sum(reward_var[:meta_action_every_n]),
+                       tf.reduce_sum(reward_var[:meta_action_every_n_op]),
                        discount * (1 - tf.to_float(next_reset_episode_cond)),
                        next_state]
     meta_transition.extend([states_var, actions])
@@ -212,13 +260,13 @@ def collect_experience(tf_env, agent, meta_agent, state_preprocess,
         replay_buffer.maybe_add(transition, step_cond),
         meta_replay_buffer.maybe_add(
             meta_transition, tf.logical_and(
-                meta_step_cond, tf.greater(agent.tf_context.t, meta_action_every_n * 2))))
+                meta_step_cond, tf.greater(agent.tf_context.t, tf.math.multiply(meta_action_every_n_op, 2)))))
 
   with tf.control_dependencies([collect_experience_op]):
     collect_experience_op = tf.cond(reset_env_cond,
                                     tf_env.reset,
                                     tf_env.current_time_step)
-    meta_period = tf.equal(agent.tf_context.t % meta_action_every_n, 1)
+    meta_period = tf.equal(agent.tf_context.t % meta_action_every_n_op, 1)
     states_var_upd = tf.assign(states_var, tf.concat([states_var[1:, :], [next_state]], 0))
     state_var_upd = tf.assign(
         state_var,
@@ -363,7 +411,10 @@ def train_uvf(train_dir,
               max_critic_horizon=10,
               relabel_using_dynamics=False,
               use_windowed_data_collection=False,
-              skip_training_policies=False):
+              skip_training_policies=False,
+              variable_skill_length=False,
+              variable_skill_length_tau=0.01,
+              variable_skill_length_start_multiplier=2):
   """Train an agent."""
   tf_env = create_maze_env.TFPyEnvironment(environment)
   observation_spec = [tf_env.observation_spec()]
@@ -464,7 +515,10 @@ def train_uvf(train_dir,
       episode_meta_rewards=episode_meta_rewards,
       store_context=True,
       disable_agent_reset=False,
-      use_windowed_data_collection=use_windowed_data_collection
+      use_windowed_data_collection=use_windowed_data_collection,
+      variable_skill_length=variable_skill_length,
+      variable_skill_length_tau=variable_skill_length_tau,
+      variable_skill_length_start_multiplier=variable_skill_length_start_multiplier
   )
 
   # Create train ops
@@ -484,7 +538,10 @@ def train_uvf(train_dir,
       episode_meta_rewards=episode_meta_rewards,
       store_context=True,
       disable_agent_reset=False,
-      use_windowed_data_collection=use_windowed_data_collection
+      use_windowed_data_collection=use_windowed_data_collection,
+      variable_skill_length=variable_skill_length,
+      variable_skill_length_tau=variable_skill_length_tau,
+      variable_skill_length_start_multiplier=variable_skill_length_start_multiplier
   )
 
   train_op_list = []
