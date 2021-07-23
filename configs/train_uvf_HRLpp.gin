@@ -32,10 +32,10 @@ train_uvf.num_collect_per_meta_update = %NUM_COLLECT_PER_META_UPDATE
 train_uvf.debug_summaries = False
 train_uvf.log_every_n_steps = 1000
 train_uvf.save_policy_every_n_steps =100000
-train_uvf.I2HRL_enable_flag=True
-train_uvf.I2HRL_lp_embedder_class=%EMBEDDING_POLICY_PROCESS_CLASS
-train_uvf.I2HRL_lp_embedder_optimizer=@repr/AdamOptimizer()
-train_uvf.I2HRL_lp_embedding_size=30
+train_uvf.HRLpp_enable_flag=True
+train_uvf.HRLpp_lp_embedder_class=%EMBEDDING_POLICY_PROCESS_CLASS
+train_uvf.HRLpp_lp_embedder_optimizer=@repr/AdamOptimizer()
+train_uvf.HRLpp_lp_embedding_size=30
 
 # Config Optimizers
 critic/AdamOptimizer.learning_rate = 0.001

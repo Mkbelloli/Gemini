@@ -34,8 +34,8 @@ import gin.tf
 import train_utils
 import agent as agent_
 from agents.connected_agent import ConnectedAgent
-from I2HRL_agent import I2HRL_UvfAgent
-from I2HRL_agent import PolicyRepresentationModule
+from HRLpp_agent import HRLpp_UvfAgent
+from HRLpp_agent import PolicyRepresentationModule
 from agents import circular_buffer
 from utils import utils as uvf_utils
 from environments import create_maze_env
@@ -61,7 +61,7 @@ def collect_experience(tf_env, agent, meta_agent, state_preprocess,
                        disable_agent_reset,
                        use_windowed_data_collection,
                        embedding_model_fn=None,
-                       I2HRL_enable_flag=False,
+                       HRLpp_enable_flag=False,
                        policy_embedder=None):
   """Collect experience in a tf_env into a replay_buffer using action_fn.
 
@@ -148,7 +148,7 @@ def collect_experience(tf_env, agent, meta_agent, state_preprocess,
         tf.equal(discount, 0.0))
 
   lp_embedding = None
-  if I2HRL_enable_flag:
+  if HRLpp_enable_flag:
     # Highlevel action is stored explicitely to avoid that
     # setting store_context setting could inhibit its usage
     lp_embedding = policy_embedder.get_embedding_policy()
@@ -184,7 +184,7 @@ def collect_experience(tf_env, agent, meta_agent, state_preprocess,
     meta_action = tf.to_float(
         tf.concat(context, -1))  # Meta agent action is low-level context
 
-    if I2HRL_enable_flag:
+    if HRLpp_enable_flag:
         # Highlevel action is stored explicitely to avoid that
         # setting store_context setting could inhibit its usage
         with tf.control_dependencies([state, action, meta_action]):
@@ -221,7 +221,7 @@ def collect_experience(tf_env, agent, meta_agent, state_preprocess,
                        tf.reduce_sum(reward_var[:meta_action_every_n]),
                        discount * (1 - tf.to_float(next_reset_episode_cond)),
                        next_state]
-    if I2HRL_enable_flag:
+    if HRLpp_enable_flag:
         with tf.control_dependencies([lp_embedding]):
             meta_transition.extend([lp_embedding])
     meta_transition.extend([states_var, actions])
@@ -390,12 +390,12 @@ def train_uvf(train_dir,
               relabel_using_dynamics=False,
               use_windowed_data_collection=False,
               skip_training_policies=False,
-              #new params for I2HRL
-              I2HRL_enable_flag=False,
-              I2HRL_lp_embedder_class=None,
-              I2HRL_lp_embedder_optimizer=None,
-              I2HRL_lp_embedding_size=0,
-              I2HRL_lp_embedding_dtpye=tf.float32):
+              #new params for HRLpp
+              HRLpp_enable_flag=False,
+              HRLpp_lp_embedder_class=None,
+              HRLpp_lp_embedder_optimizer=None,
+              HRLpp_lp_embedding_size=0,
+              HRLpp_lp_embedding_dtpye=tf.float32):
   """Train an agent."""
   tf_env = create_maze_env.TFPyEnvironment(environment)
   observation_spec = [tf_env.observation_spec()]
@@ -419,9 +419,9 @@ def train_uvf(train_dir,
                 'action_spec':action_spec,
                 'tf_env':tf_env,
                 'debug_summaries':debug_summaries}
-    if I2HRL_enable_flag:
-        kwargs['additional_state_shape']=I2HRL_lp_embedding_size
-        kwargs['additional_state_dtype']=I2HRL_lp_embedding_dtpye
+    if HRLpp_enable_flag:
+        kwargs['additional_state_shape']=HRLpp_lp_embedding_size
+        kwargs['additional_state_dtype']=HRLpp_lp_embedding_dtpye
     meta_agent = meta_agent_class(**kwargs)
   meta_agent.set_replay(replay=meta_replay_buffer)
 
@@ -448,9 +448,9 @@ def train_uvf(train_dir,
     state_preprocess = state_preprocess_class()
 
   lp_embedder = None
-  if I2HRL_enable_flag:
+  if HRLpp_enable_flag:
       with tf.variable_scope('lp_embedder'):
-        lp_embedder = I2HRL_lp_embedder_class()
+        lp_embedder = HRLpp_lp_embedder_class()
 
   with tf.variable_scope('inverse_dynamics'):
     inverse_dynamics = inverse_dynamics_class(
@@ -507,7 +507,7 @@ def train_uvf(train_dir,
       store_context=True,
       disable_agent_reset=False,
       use_windowed_data_collection=use_windowed_data_collection,
-      I2HRL_enable_flag=I2HRL_enable_flag,
+      HRLpp_enable_flag=HRLpp_enable_flag,
       policy_embedder=lp_embedder
   )
 
@@ -529,7 +529,7 @@ def train_uvf(train_dir,
       store_context=True,
       disable_agent_reset=False,
       use_windowed_data_collection=use_windowed_data_collection,
-      I2HRL_enable_flag=I2HRL_enable_flag,
+      HRLpp_enable_flag=HRLpp_enable_flag,
       policy_embedder=lp_embedder
   )
 
@@ -583,7 +583,7 @@ def train_uvf(train_dir,
         state=states, next_state=next_states)
 
       if mode == 'meta':
-        if I2HRL_enable_flag:
+        if HRLpp_enable_flag:
             lp_embeddings = batch_dequeue[5]
             low_states = batch_dequeue[6]
             low_actions = batch_dequeue[7]
@@ -627,7 +627,7 @@ def train_uvf(train_dir,
             clip_gradient_norm=clip_gradient_norm,
             variables_to_train=state_preprocess.get_trainable_vars())
 
-      if I2HRL_enable_flag and mode == 'meta':
+      if HRLpp_enable_flag and mode == 'meta':
           exp_indices = np.array([[v]*10 for v in range(100)]).reshape((1,1000))
           exp_meta_actions = tf.squeeze(tf.gather(actions, exp_indices))
           exp_states = tf.reshape(low_states, (1000,30))
@@ -635,7 +635,7 @@ def train_uvf(train_dir,
           lp_embedder_loss = lp_embedder.loss(exp_states, exp_meta_actions, exp_low_actions)
           lpemb_train_op = slim.learning.create_train_op(
             lp_embedder_loss,
-            I2HRL_lp_embedder_optimizer,
+            HRLpp_lp_embedder_optimizer,
             global_step=None,
             update_ops=None,
             summarize_gradients=summarize_gradients,
@@ -645,13 +645,13 @@ def train_uvf(train_dir,
 
       if not relabel:  # Re-label context (in the style of TDM or HER).
         shift_index = (5 if mode == "nometa" else 7)
-        if I2HRL_enable_flag and mode == "meta":
+        if HRLpp_enable_flag and mode == "meta":
             shift_index+=1
         contexts, next_contexts = (
           batch_dequeue[shift_index:(shift_index + len(contexts))],
           batch_dequeue[(shift_index + len(contexts)):(shift_index + len(contexts) * 2)])
 
-      if I2HRL_enable_flag and mode == 'meta':
+      if HRLpp_enable_flag and mode == 'meta':
         merged_states = agent.merged_states(states, contexts, lp_embeddings)
         merged_next_states = agent.merged_states(next_states, next_contexts, lp_embeddings) # same embedding for a stationary lp emb
       else:
@@ -751,7 +751,7 @@ def train_uvf(train_dir,
     # Representation training steps on every low-level policy training step.
     train_op += repr_train_op
 
-    if I2HRL_enable_flag:
+    if HRLpp_enable_flag:
         train_op += lpemb_train_op
 
 

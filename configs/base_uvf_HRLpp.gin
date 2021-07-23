@@ -3,7 +3,7 @@ import gin.tf.external_configurables
 
 create_maze_env.top_down_view = %IMAGES
 ## Create the agent
-AGENT_CLASS = @I2HRL_UvfAgent
+AGENT_CLASS = @HRLpp_UvfAgent
 UvfAgent.tf_context = %CONTEXT
 UvfAgent.actor_net = @agent/ddpg_actor_net
 UvfAgent.critic_net = @agent/ddpg_critic_net
@@ -12,7 +12,7 @@ UvfAgent.td_errors_loss = @tf.losses.huber_loss
 UvfAgent.target_q_clipping = %TARGET_Q_CLIPPING
 
 # Create meta agent
-META_CLASS = @I2HRL_MetaAgent
+META_CLASS = @HRLpp_MetaAgent
 MetaAgent.tf_context = %META_CONTEXT
 MetaAgent.sub_context = %CONTEXT
 MetaAgent.actor_net = @meta/ddpg_actor_net

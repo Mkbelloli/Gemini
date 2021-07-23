@@ -14,13 +14,13 @@ import agent
 
 
 @gin.configurable
-class I2HRL_UvfAgent(agent.UvfAgent):
+class HRLpp_UvfAgent(agent.UvfAgent):
     def __init__(self, *args, **kwargs):
         agent.UvfAgent.__init__(self, *args, **kwargs)
 
 
 @gin.configurable
-class I2HRL_MetaAgent(agent.MetaAgent):
+class HRLpp_MetaAgent(agent.MetaAgent):
     def __init__(self, *args, **kwargs):
         kwargs['additional_state_specs'] = specs.TensorSpec(
             dtype = kwargs['additional_state_dtype'],
