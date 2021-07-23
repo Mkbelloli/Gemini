@@ -109,7 +109,7 @@ class UvfAgentCore(object):
     """
     return self.BASE_AGENT_CLASS.actor_loss(self, states)
 
-  def action(self, state, context=None):
+  def action(self, state, context=None, **kwargs):
     """Returns the next action for the state.
 
     Args:
@@ -121,7 +121,7 @@ class UvfAgentCore(object):
     merged_state = self.merged_state(state, context)
     return self.BASE_AGENT_CLASS.action(self, merged_state)
 
-  def actions(self, state, context=None):
+  def actions(self, state, context=None, **kwargs):
     """Returns the next action for the state.
 
     Args:
@@ -169,9 +169,9 @@ class UvfAgentCore(object):
     if global_step is not None:
       stddev *= tf.maximum(  # Decay exploration during training.
           tf.train.exponential_decay(1.0, global_step, 1e6, 0.8), 0.5)
-    def noisy_action_fn(state, context=None):
+    def noisy_action_fn(state, context=None, **kwargs ):
       """Noisy action fn."""
-      action = action_fn(state, context)
+      action = action_fn(state, context, **kwargs)
       if debug:
         action = uvf_utils.tf_print(
             action, [action],
@@ -191,7 +191,7 @@ class UvfAgentCore(object):
       return action
     return noisy_action_fn
 
-  def merged_state(self, state, context=None):
+  def merged_state(self, state, context=None, additional_state=None):
     """Returns the merged state from the environment state and contexts.
 
     Args:
@@ -203,11 +203,18 @@ class UvfAgentCore(object):
     """
     if context is None:
       context = list(self.context_vars)
-    state = tf.concat([state,] + context, axis=-1)
+
+    state = tf.concat([state, ] + context, axis=-1)
+    if not additional_state is None:
+        if type(additional_state) != type([]):
+            additional_state = [additional_state] if (type(additional_state) != type([])) \
+                                                    else additional_state
+
+        state = tf.concat([state, tf.squeeze(additional_state)], axis=-1)
     self._validate_states(self._batch_state(state))
     return state
 
-  def merged_states(self, states, contexts=None):
+  def merged_states(self, states, contexts=None, additional_states=None):
     """Returns the batch merged state from the batch env state and contexts.
 
     Args:
@@ -225,6 +232,13 @@ class UvfAgentCore(object):
                           (tf.shape(states)[0], 1)) for
                   context in self.context_vars]
     states = tf.concat([states,] + contexts, axis=-1)
+
+    if not additional_states is None:
+        if type(additional_states) != type([]):
+            additional_states = [additional_states] if (type(additional_states) != type([])) \
+                                                    else additional_states
+
+        states = tf.concat([states, tf.squeeze(additional_states)], axis=-1)
     self._validate_states(states)
     return states
 
@@ -346,11 +360,12 @@ class UvfAgentCore(object):
       Conditional begin op.
     """
     (state, action, reward, next_state,
-     state_repr, next_state_repr) = input_vars
+     state_repr, next_state_repr, lp_embedding) = input_vars
+
     def continue_fn():
       """Continue op fn."""
       items = [state, action, reward, next_state,
-               state_repr, next_state_repr] + list(self.context_vars)
+               state_repr, next_state_repr ] + list(self.context_vars)
       batch_items = [tf.expand_dims(item, 0) for item in items]
       (states, actions, rewards, next_states,
        state_reprs, next_state_reprs) = batch_items[:6]
@@ -378,6 +393,7 @@ class UvfAgentCore(object):
                                         next_state=next_state,
                                         state_repr=state_repr,
                                         next_state_repr=next_state_repr,
+                                        additional_state = lp_embedding,
                                         action_fn=meta_action_fn)
       with tf.control_dependencies(step_ops):
         context_reward, meta_reward = map(tf.identity, [context_reward, meta_reward])
@@ -518,8 +534,16 @@ class MetaAgentCore(UvfAgentCore):
     self.init_context_vars = self.tf_context.create_vars
 
     self.env_observation_spec = observation_spec[0]
-    merged_observation_spec = (uvf_utils.merge_specs(
-        (self.env_observation_spec,) + self.context_specs),)
+
+    self.additional_state_specs = None
+    if 'additional_state_specs' in base_agent_kwargs:
+        self.additional_state_specs = base_agent_kwargs["additional_state_specs"]
+        del base_agent_kwargs["additional_state_specs"] # not needed anymore
+
+    merged_observation_spec = (uvf_utils.merge_specs((self.env_observation_spec,) + self.context_specs),)
+    if not self.additional_state_specs is None:
+        merged_observation_spec = (uvf_utils.merge_specs(merged_observation_spec + (self.additional_state_specs,)),)
+
     self._context_vars = dict()
     self._action_vars = dict()
 

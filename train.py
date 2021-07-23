@@ -29,8 +29,6 @@ import time
 import tensorflow as tf
 slim = tf.contrib.slim
 
-import confvalues
-
 import gin.tf
 # pylint: disable=unused-import
 import train_utils
@@ -62,7 +60,9 @@ def collect_experience(tf_env, agent, meta_agent, state_preprocess,
                        store_context,
                        disable_agent_reset,
                        use_windowed_data_collection,
-                       embedding_model_fn=None):
+                       embedding_model_fn=None,
+                       I2HRL_enable_flag=False,
+                       policy_embedder=None):
   """Collect experience in a tf_env into a replay_buffer using action_fn.
 
   Args:
@@ -147,12 +147,19 @@ def collect_experience(tf_env, agent, meta_agent, state_preprocess,
             transition_type, environment_steps, num_episodes),
         tf.equal(discount, 0.0))
 
+  lp_embedding = None
+  if I2HRL_enable_flag:
+    # Highlevel action is stored explicitely to avoid that
+    # setting store_context setting could inhibit its usage
+    lp_embedding = policy_embedder.get_embedding_policy()
+
   if store_context:
     context = [tf.identity(var) + tf.zeros_like(var) for var in agent.context_vars]
     meta_context = [tf.identity(var) + tf.zeros_like(var) for var in meta_agent.context_vars]
   else:
     context = []
     meta_context = []
+
   with tf.control_dependencies([next_state] + context + meta_context):
     if disable_agent_reset:
       collect_experience_ops = [tf.no_op()]  # don't reset agent
@@ -160,7 +167,7 @@ def collect_experience(tf_env, agent, meta_agent, state_preprocess,
       collect_experience_ops = agent.cond_begin_episode_op(
           tf.logical_not(reset_episode_cond),
           [state, action, reward, next_state,
-           state_repr, next_state_repr],
+           state_repr, next_state_repr, lp_embedding],
           mode='explore', meta_action_fn=meta_action_fn)
       context_reward, meta_reward = collect_experience_ops
       collect_experience_ops = list(collect_experience_ops)
@@ -177,10 +184,11 @@ def collect_experience(tf_env, agent, meta_agent, state_preprocess,
     meta_action = tf.to_float(
         tf.concat(context, -1))  # Meta agent action is low-level context
 
-    if confvalues.I2HRL:
-        # Highlevel action is stored explicitely to avoid that setting store_context
-        # could inibit its usage
-        transition += [meta_action]
+    if I2HRL_enable_flag:
+        # Highlevel action is stored explicitely to avoid that
+        # setting store_context setting could inhibit its usage
+        with tf.control_dependencies([state, action, meta_action]):
+            load_step_op = policy_embedder.load_step(state, action, meta_action)
 
     meta_end = tf.logical_and(  # End of meta-transition.
         tf.equal(agent.tf_context.t % meta_action_every_n, 1),
@@ -213,10 +221,10 @@ def collect_experience(tf_env, agent, meta_agent, state_preprocess,
                        tf.reduce_sum(reward_var[:meta_action_every_n]),
                        discount * (1 - tf.to_float(next_reset_episode_cond)),
                        next_state]
+    if I2HRL_enable_flag:
+        with tf.control_dependencies([lp_embedding]):
+            meta_transition.extend([lp_embedding])
     meta_transition.extend([states_var, actions])
-
-    if confvalues.I2HRL:
-        meta_transition += [agent.get_embedding_policy()]
 
     if store_context:  # store current and next context into replay
       transition += context + list(agent.context_vars)
@@ -254,6 +262,7 @@ def collect_experience(tf_env, agent, meta_agent, state_preprocess,
   ops_to_run = meta_context_var_upd + [
       collect_experience_op,
       states_var_upd,
+      load_step_op,
       state_var_upd,
       reward_var_upd,
       meta_action_var_upd]
@@ -382,9 +391,11 @@ def train_uvf(train_dir,
               use_windowed_data_collection=False,
               skip_training_policies=False,
               #new params for I2HRL
-              use_i2hrl=False,
-              lp_embedder_class=None,
-              lpemb_optimizer=None):
+              I2HRL_enable_flag=False,
+              I2HRL_lp_embedder_class=None,
+              I2HRL_lp_embedder_optimizer=None,
+              I2HRL_lp_embedding_size=0,
+              I2HRL_lp_embedding_dtpye=tf.float32):
   """Train an agent."""
   tf_env = create_maze_env.TFPyEnvironment(environment)
   observation_spec = [tf_env.observation_spec()]
@@ -404,11 +415,14 @@ def train_uvf(train_dir,
 
   assert agent_class.ACTION_TYPE == meta_agent_class.ACTION_TYPE
   with tf.variable_scope('meta_agent'):
-    meta_agent = meta_agent_class(
-        observation_spec,
-        action_spec,
-        tf_env,
-        debug_summaries=debug_summaries)
+    kwargs = {'observation_spec':observation_spec,
+                'action_spec':action_spec,
+                'tf_env':tf_env,
+                'debug_summaries':debug_summaries}
+    if I2HRL_enable_flag:
+        kwargs['additional_state_shape']=I2HRL_lp_embedding_size
+        kwargs['additional_state_dtype']=I2HRL_lp_embedding_dtpye
+    meta_agent = meta_agent_class(**kwargs)
   meta_agent.set_replay(replay=meta_replay_buffer)
 
   with tf.variable_scope('uvf_agent'):
@@ -419,9 +433,8 @@ def train_uvf(train_dir,
         debug_summaries=debug_summaries)
     uvf_agent.set_meta_agent(agent=meta_agent)
     uvf_agent.set_replay(replay=replay_buffer)
-    if use_i2hrl:
-        uvf_agent.set_replaybuffer(replay_buffer)
-  meta_agent.set_subagent(uvf_agent)
+
+    meta_agent.set_subagent(uvf_agent)
 
   if use_connected_policies:
     meta_agent = ConnectedAgent(
@@ -435,10 +448,9 @@ def train_uvf(train_dir,
     state_preprocess = state_preprocess_class()
 
   lp_embedder = None
-  if use_i2hrl:
+  if I2HRL_enable_flag:
       with tf.variable_scope('lp_embedder'):
-        lp_embedder = lp_embedder_class()
-        uvf_agent.load_policy_embedder(lp_embedder)
+        lp_embedder = I2HRL_lp_embedder_class()
 
   with tf.variable_scope('inverse_dynamics'):
     inverse_dynamics = inverse_dynamics_class(
@@ -494,7 +506,9 @@ def train_uvf(train_dir,
       episode_meta_rewards=episode_meta_rewards,
       store_context=True,
       disable_agent_reset=False,
-      use_windowed_data_collection=use_windowed_data_collection
+      use_windowed_data_collection=use_windowed_data_collection,
+      I2HRL_enable_flag=I2HRL_enable_flag,
+      policy_embedder=lp_embedder
   )
 
   # Create train ops
@@ -514,7 +528,9 @@ def train_uvf(train_dir,
       episode_meta_rewards=episode_meta_rewards,
       store_context=True,
       disable_agent_reset=False,
-      use_windowed_data_collection=use_windowed_data_collection
+      use_windowed_data_collection=use_windowed_data_collection,
+      I2HRL_enable_flag=I2HRL_enable_flag,
+      policy_embedder=lp_embedder
   )
 
   train_op_list = []
@@ -567,8 +583,14 @@ def train_uvf(train_dir,
         state=states, next_state=next_states)
 
       if mode == 'meta':
-        low_states = batch_dequeue[5]
-        low_actions = batch_dequeue[6]
+        if I2HRL_enable_flag:
+            lp_embeddings = batch_dequeue[5]
+            low_states = batch_dequeue[6]
+            low_actions = batch_dequeue[7]
+        else:
+            low_states = batch_dequeue[5]
+            low_actions = batch_dequeue[6]
+
         low_state_reprs = state_preprocess(low_states)
         low_states, low_next_states = tf.split(low_states, 2, axis=1)
         low_actions, low_next_actions = tf.split(low_actions, 2, axis=1)
@@ -605,11 +627,15 @@ def train_uvf(train_dir,
             clip_gradient_norm=clip_gradient_norm,
             variables_to_train=state_preprocess.get_trainable_vars())
 
-      if use_i2hrl:
-          lp_embedder_loss, _, _ = lp_embedder.loss(states, actions, low_actions)
+      if I2HRL_enable_flag and mode == 'meta':
+          exp_indices = np.array([[v]*10 for v in range(100)]).reshape((1,1000))
+          exp_meta_actions = tf.squeeze(tf.gather(actions, exp_indices))
+          exp_states = tf.reshape(low_states, (1000,30))
+          exp_low_actions = tf.reshape(low_actions, (1000,8))
+          lp_embedder_loss = lp_embedder.loss(exp_states, exp_meta_actions, exp_low_actions)
           lpemb_train_op = slim.learning.create_train_op(
             lp_embedder_loss,
-            lpemb_optimizer,
+            I2HRL_lp_embedder_optimizer,
             global_step=None,
             update_ops=None,
             summarize_gradients=summarize_gradients,
@@ -619,14 +645,18 @@ def train_uvf(train_dir,
 
       if not relabel:  # Re-label context (in the style of TDM or HER).
         shift_index = (5 if mode == "nometa" else 7)
-        if use_i2hrl:
+        if I2HRL_enable_flag and mode == "meta":
             shift_index+=1
         contexts, next_contexts = (
           batch_dequeue[shift_index:(shift_index + len(contexts))],
           batch_dequeue[(shift_index + len(contexts)):(shift_index + len(contexts) * 2)])
 
-      merged_states = agent.merged_states(states, contexts)
-      merged_next_states = agent.merged_states(next_states, next_contexts)
+      if I2HRL_enable_flag and mode == 'meta':
+        merged_states = agent.merged_states(states, contexts, lp_embeddings)
+        merged_next_states = agent.merged_states(next_states, next_contexts, lp_embeddings) # same embedding for a stationary lp emb
+      else:
+        merged_states = agent.merged_states(states, contexts)
+        merged_next_states = agent.merged_states(next_states, next_contexts)
       if mode == 'nometa':
         context_rewards, context_discounts = agent.compute_rewards(
             'train', state_reprs, actions, rewards, next_state_reprs, contexts)
@@ -721,7 +751,7 @@ def train_uvf(train_dir,
     # Representation training steps on every low-level policy training step.
     train_op += repr_train_op
 
-    if use_i2hrl:
+    if I2HRL_enable_flag:
         train_op += lpemb_train_op
 
 

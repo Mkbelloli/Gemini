@@ -372,6 +372,8 @@ class Context(object):
       next_state = kwargs['next_state']
       state_repr = kwargs['state_repr']
       next_state_repr = kwargs['next_state_repr']
+      additional_state = kwargs['additional_state']
+
       with tf.control_dependencies(ops):  # Step high level context before computing low level one.
         # Get the context transition function output.
         values = self._context_transition_fn(self.vars, self.t, None,
@@ -380,7 +382,7 @@ class Context(object):
         # Select a new goal every C steps, otherwise use context transition.
         low_level_context = [
             tf.cond(tf.equal(self.t % self.meta_action_every_n, 0),
-                    lambda: tf.cast(action_fn(next_state, context=None), tf.float32),
+                    lambda: tf.cast(action_fn(next_state, context=None, additional_state=additional_state), tf.float32),
                     lambda: values)]
         ops = [tf.assign(var, value)
                for var, value in zip(self.vars, low_level_context)]

@@ -29,11 +29,6 @@ state_preprocess_net.num_output_dims = %SUBGOAL_DIM
 state_preprocess_net.images = %IMAGES
 action_embed_net.num_output_dims = %SUBGOAL_DIM
 
-# Create embedding policy process
-EMBEDDING_POLICY_PROCESS_CLASS = @PolicyRepresentationModule
-PolicyRepresentationModule.policy_embedding_size = 100
-PolicyRepresentationModule.transition_history = 10
-
 INVERSE_DYNAMICS_CLASS = @InverseDynamics
 
 # actor_net
