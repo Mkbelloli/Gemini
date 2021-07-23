@@ -180,33 +180,29 @@ class PolicyRepresentationModule(object):
         self.IMITATION_NET_SCOPE, imitation_net,
         create_scope_now_=True)
     self.__transition_history = transition_history
-    self.steps_history =[tf.cast(tf.stack([0]*53), tf.float32)] * self.__transition_history
-    self.current_step = 0
-    self.__num_steps = 0
+
     ## initialize buffer
     with tf.variable_scope(tf.get_variable_scope(), reuse=tf.AUTO_REUSE):
         self.steps_history = tf.get_variable( name='TransitionBuffer', shape=(10,53), dtype=tf.float32, trainable=False)
-        self.current_step = tf.get_variable(name='CurrentPosition',  dtype=tf.int32, \
-                                              trainable=False, initializer=tf.zeros(1, dtype=tf.int32))
-        self.__current_step = 0
+
 
 
   def load_step(self, state, low_action, meta_action):
     input_c = tf.concat([state, low_action, meta_action], 0)  # TODO: da mettere in vettore 1D
     input = tf.reshape(input_c, [1, state.shape[0] + low_action.shape[0] + meta_action.shape[0]])
     update_buffer_ops = []
-    update_buffer_upd = tf.scatter_update(self.steps_history, [self.__current_step], input)
+    update_buffer_roll = tf.roll(self.steps_history, shift=1, axis=0)
+    with tf.control_dependencies([update_buffer_roll]):
+        update_buffer_upd = tf.scatter_update(self.steps_history, [0], input)
 
-    with tf.control_dependencies([update_buffer_upd]):
-        update_pointer_upd = tf.math.mod(tf.math.add(self.current_step,1), tf.constant(self.__transition_history, tf.int32))
+    update_buffer_ops.append(update_buffer_roll)
     update_buffer_ops.append(update_buffer_upd)
-    update_buffer_ops.append(update_pointer_upd)
-    self.__current_step = (self.__current_step+1)%self.__transition_history
+
     return tf.group(*update_buffer_ops)
 
   def __get_step_history(self):
       #buff = self.steps_history[self.current_step:] + self.steps_history[:self.current_step]
-      input_c = tf.concat([self.steps_history[self.__current_step:], self.steps_history[:self.__current_step]], 0)  # TODO: da mettere in vettore 1D
+      input_c = self.steps_history
       return tf.reshape(input_c, [1, 53*self.__transition_history])
 
   def get_embedding_policy(self):
