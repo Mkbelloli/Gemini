@@ -3,17 +3,34 @@ BATCH_SIZE = 15
 
 sess = tf.InteractiveSession()
 
-states = tf.Variable(tf.random.uniform([100, 10], -1, 1))
-meta_actions = tf.Variable(tf.random.uniform([100, 10], -1, 1))
-actions = tf.Variable(tf.random.uniform([100, 10], -1, 1))
+# states = tf.Variable(tf.random.uniform([100, 10], -1, 1))
+# meta_actions = tf.Variable(tf.random.uniform([100, 10], -1, 1))
+# actions = tf.Variable(tf.random.uniform([100, 10], -1, 1))
+#
+#
+#
+# ds = tf.concat([states, meta_actions, actions], 1)
+# num_batches = ds.shape[0].value // BATCH_SIZE
+# batches_ds = tf.split(ds[:num_batches*BATCH_SIZE,:], num_batches, 0 )
+# tf.initialize_all_variables().run()
+# op = sess.run(batches_ds)
 
-ds = tf.concat([states, meta_actions, actions], 1)
-num_batches = ds.shape[0].value // BATCH_SIZE
-batches_ds = tf.split(ds[:num_batches*BATCH_SIZE,:], num_batches, 0 )
-tf.initialize_all_variables().run()
-op = sess.run(batches_ds)
+x = tf.constant(3.0)
+y = tf.constant(8.0)
 
-states = tf.
+def true_fn():
+    assert("TRUE")
+    z = tf.multiply(x, y)
+    print_output = tf.Print(z, [z], "The value I want to print!!")
+    return tf.add(x, print_output)
 
+def false_fn():
+    assert ("FALSE")
+    return tf.square(y)
+
+result = tf.cond(x < y, true_fn, false_fn)
+
+with tf.Session() as sess:
+    print(sess.run(result))
 
 print("stop")
